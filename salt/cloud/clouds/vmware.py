@@ -3046,3 +3046,125 @@ def reboot_host(kwargs=None, call=None):
         return {host_name: 'failed to reboot host'}
 
     return {host_name: 'rebooted host'}
+
+
+def vMotion_vm(name, kwargs=None, call=None):
+    '''
+    vMotions a specified VM to an optional host or resource pool.
+    ..note::
+        If a pool is not specified, the current pool is used as the target pool.
+        If a host is not specified, the DRS system selects a target host.
+        If a priority is not specified, 'defaultPriority' is assigned. The priority values are
+        'highPriority' or 'lowPriority'
+
+    CLI Example:
+
+    .. code-block:: bash
+        salt-cloud -a vMotion_vm vmname priority="priorityLevel"
+        salt-cloud -a vMotion_vm vmname resourcePool="resourcePoolName"
+        salt-cloud -a vMotion_vm vmname host="hostSystemName"
+    '''
+    if call != 'action':
+        raise SaltCloudSystemExit(
+                'The vMotion_vm action must be called with -a or --action'
+        )
+
+    pool = kwargs.get('resourcePool') if kwargs else None
+    host_name = kwargs.get('host') if kwargs else None
+    priorityLevel = kwargs.get('priority') if kwargs else None
+
+    priority = vim.VirtualMachine.MovePriority()
+
+    if priorityLevel == "lowPriority":
+        priority = priority.lowPriority
+    elif priorityLevel == "highPriority":
+        priority = priority.highPriority
+    else:
+        priority = priority.defaultPriority
+
+    vm_ref = _get_mor_by_property(vim.VirtualMachine, name)
+
+    try:
+        if pool:
+            pool_ref = _get_mor_by_property(vim.ResourcePool, pool)
+
+            if pool_ref == None:
+                return 'Specified resource pool {0} does not exit'.format(pool)
+
+            log.info('Starting vMotion to {0}'.format(pool))
+            task = vm_ref.MigrateVM_Task(pool=pool_ref, priority=priority)
+            ret = "vMotioned {0} to resource pool {1}".format(name, pool)
+        elif host_name:
+            host_ref = _get_mor_by_property(vim.HostSystem, host_name)
+            
+            if host_ref == None:
+               return 'Specified host {0} does not exist'.format(host_name)
+            if host_ref == vm_ref.runtime.host:
+                return '{0} is already running on {1}'.format(name, host_name)
+
+            log.info('Starting vMotion to {0}'.format(host_name))
+            task = vm_ref.MigrateVM_Task(host=host_ref, priority=priority)
+            ret = "vMotioned {0} to host {1}".format(name, host_name)
+        else:
+            log.info('Starting vMotion on {0}'.format(name))
+            task = vm_ref.MigrateVM_Task(priority=priority)
+            ret = "vMotioned {0}".format(name)
+
+        _wait_for_task(task, name, "vMotion", 15, 'info')
+
+    except Exception as exc:
+        log.error('Could not vMotion {0}: {1}'.format(name, exc),
+                # Show the traceback if the debug logging level is enabled
+                exc_info_on_loglevel=logging.DEBUG
+        )
+        return 'Failed to complete vMotion'
+
+    return ret
+
+
+def svMotion_vm(name, kwargs=None, call=None):
+    '''
+    Storage vMotion moves disks associated with a specified vm to a specified datastore.
+
+    CLI Example:
+
+    .. code-block:: bash
+        salt-cloud -a svMotion_vm vmname datastoreName
+    '''
+    if call != 'action':
+        raise SaltCloudSystemExit(
+                'The svMotion_vm action must be called with -a or --action'
+        )
+
+    datastore = kwargs.get('datastore') if kwargs else None
+
+    if not datastore:
+        raise SaltCloudSystemExit(
+                "A datastore name must be entered"
+        )
+
+    vm_ref = _get_mor_by_property(vim.VirtualMachine, name)
+    datastore_ref = _get_mor_by_property(vim.Datastore, datastore)
+
+    if not datastore_ref:
+        raise SaltCloudSystemExit(
+                "The entered datastore name is not valid"
+        )
+
+    try:
+        spec = vim.vm.RelocateSpec()
+        spec.datastore = datastore_ref
+
+        log.info('Starting svMotion of {0} to {1}'.format(name, datastore))
+        task = vm_ref.RelocateVM_Task(spec=spec)
+
+        _wait_for_task(task, name, 'Storage vMotion', 10, 'info')
+
+        ret = "Storage vMotion successful to {0}".format(datastore)
+    except Exception as exc:
+        log.error('Could not execute svMotion on {0} to {1}: {2}'.format(name, datastore, exc),
+                exc_info_on_loglevel=logging.DEBUG
+        )
+        return 'Failed to complete svMotion'
+
+    return ret
